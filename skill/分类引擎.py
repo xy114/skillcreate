@@ -12,8 +12,11 @@ AI 天然理解语义——无需手工维护词库，切换类目只需在 Prom
 import csv
 import json
 import os
-import sys
 import re
+import sys
+import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent
@@ -76,8 +79,6 @@ def 调用_LLM_分类(分类标准: str, 分类任务: str, 类目: str) -> str:
         return ""
 
     try:
-        import urllib.request
-
         系统提示 = f"""{分类标准}
 
 ---
@@ -167,7 +168,7 @@ def 处理关键词表(输入_csv路径: str, 输出_csv路径: str, 产品类�
     """读取关键词 CSV → 构造 Prompt → 调 LLM 分类 → 输出结果"""
 
     # 读取关键词
-    with open(输入_csv路径, encoding="utf-8") as f:
+    with open(输入_csv路径, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         raw_rows = list(reader)
 
