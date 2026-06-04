@@ -138,6 +138,20 @@ def 调用_LLM_分类(分类标准: str, 分类任务: str, 类目: str):
 # 结果解析
 # ============================================================
 
+def _剥离括号注释(text: str) -> str:
+    """移除中文/英文括号及其内容，支持嵌套括号（如 一级核心词（备注（重要）））。"""
+    result = []
+    depth = 0
+    for ch in text:
+        if ch in '（(':
+            depth += 1
+        elif ch in '）)':
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            result.append(ch)
+    return ''.join(result).strip()
+
+
 def 解析_LLM_结果(llm输出: str) -> list[dict]:
     """
     解析 AI 返回的分类结果（6 列 | 分隔格式）。
@@ -161,9 +175,9 @@ def 解析_LLM_结果(llm输出: str) -> list[dict]:
         if not 序号.isdigit():
             continue
 
-        # C2: 先剥离括号注释，再精确匹配
+        # C2: 先剥离括号注释（支持嵌套），再精确匹配
         raw_分类 = parts[2] if len(parts) > 2 else ""
-        分类_标准化 = re.sub(r'[（(][^)）]*[)）]', '', raw_分类).strip()
+        分类_标准化 = _剥离括号注释(raw_分类)
         分类 = 分类_标准化 if 分类_标准化 in 有效分类 else ""
 
         # C10: 建议动作校验
@@ -205,6 +219,12 @@ def 处理关键词表(输入_csv路径: str, 输出_csv路径: str, 产品类�
     with open(输入_csv路径, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         raw_rows = list(reader)
+
+    # 校验 CSV 必需列
+    if raw_rows and "关键词" not in raw_rows[0]:
+        print("❌ CSV 缺少「关键词」列，请检查输入文件格式。")
+        print(f"   实际列名: {list(raw_rows[0].keys()) if raw_rows else '（空文件）'}")
+        sys.exit(1)
 
     # 去重 + 词频统计（C8: 保留搜索量最大行）
     seen = {}
@@ -328,7 +348,8 @@ def 生成群消息摘要(统计: dict, 类目名: str) -> str:
         return f"⚠️  关键词整理预览 | {类目名}\n\n总词数：{统计['总词数']} → 去重后：{统计['去重后']}\n\n请设置 ANTHROPIC_API_KEY 后重新运行。"
 
     有效词 = max(0, 统计["去重后"] - 统计.get("不相关/宽泛词", 0))
-    return f"""📊 关键词整理完成 | {类目名}
+    未分类 = 统计.get("未分类", 0)
+    摘要 = f"""📊 关键词整理完成 | {类目名}
 
 ━━ 统计 ━━
 总词数：{统计['总词数']} → 去重后：{统计['去重后']} → 有效词：{有效词}
@@ -338,6 +359,9 @@ def 生成群消息摘要(统计: dict, 类目名: str) -> str:
 💰 三级场景词：{统计.get('三级场景词', 0)} 个（高转化）
 🏷 品牌/竞品词：{统计.get('品牌词', 0) + 统计.get('竞品词', 0)} 个
 ✂ 建议否定词：{统计.get('建议否定词', 0)} 个"""
+    if 未分类 > 0:
+        摘要 += f"\n⚠️ 未分类词：{未分类} 个（AI 未返回分类结果，需人工复核）"
+    return 摘要
 
 
 # ============================================================
