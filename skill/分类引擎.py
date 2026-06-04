@@ -69,44 +69,69 @@ def 构造分类任务_prompt(关键词列表: list[str], 产品类目: str) -> 
 # LLM 调用
 # ============================================================
 
-def 调用_LLM_分类(分类标准: str, 分类任务: str, 类目: str) -> str:
+def 调用_LLM_分类(分类标准: str, 分类任务: str, 类目: str):
     """
     调用 Anthropic API 进行关键词分类。
-    失败时返回空字符串。
+    返回: 成功返回 AI 输出文本，无 API Key 返回 None，API 失败返回 ""
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        return ""
+        return None  # 无 Key
 
-    try:
-        系统提示 = 分类标准 + "\n\n---\n**当前任务的产品类目**: " + 类目 + "\n\n请严格按分类标准完成上述关键词分类任务。直接输出分类结果，不要输出额外的解释或开场白。"
+    max_重试 = 2
+    for attempt in range(max_重试 + 1):
+        try:
+            系统提示 = 分类标准 + "\n\n---\n**当前任务的产品类目**: " + 类目 + "\n\n请严格按分类标准完成上述关键词分类任务。直接输出分类结果，不要输出额外的解释或开场白。"
 
-        请求体 = json.dumps({
-            "model": "claude-sonnet-4-6",
-            "max_tokens": 4096,
-            "system": 系统提示,
-            "messages": [
-                {"role": "user", "content": 分类任务}
+            请求体 = json.dumps({
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 4096,
+                "system": 系统提示,
+                "messages": [
+                    {"role": "user", "content": 分类任务}
+                ]
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=请求体,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                }
+            )
+
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+
+            # C1: 检查 content 长度和 block type
+            content_list = body.get("content", [])
+            if not content_list:
+                raise ValueError("API 返回空 content 列表")
+
+            text_blocks = [
+                b.get("text", "")
+                for b in content_list
+                if b.get("type") == "text"
             ]
-        }).encode("utf-8")
+            if not text_blocks:
+                raise ValueError(f"API 返回无 text 类型 block，实际类型: {[b.get('type') for b in content_list]}")
 
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=请求体,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            }
-        )
+            return "\n".join(text_blocks)
 
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            return body["content"][0]["text"]
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+            if attempt < max_重试:
+                wait = 2 ** attempt  # 1s, 2s
+                print(f"⚠️  API 调用失败（第{attempt+1}次），{wait}秒后重试: {e}")
+                time.sleep(wait)
+            else:
+                print(f"❌ API 调用失败（已重试{max_重试}次）: {e}")
+        except Exception as e:
+            print(f"❌ API 调用异常: {e}")
+            break  # 非网络错误，不重试
 
-    except Exception as e:
-        print(f"⚠️  LLM 调用失败: {e}")
-        return ""
+    return ""  # API 失败
 
 
 # ============================================================
@@ -195,16 +220,21 @@ def 处理关键词表(输入_csv路径: str, 输出_csv路径: str, 产品类�
     llm结果 = 调用_LLM_分类(分类标准, 分类任务, 产品类目)
 
     分类数据 = []
-    if llm结果:
-        分类数据 = 解析_LLM_结果(llm结果)
-        print(f"✅ AI 分类完成，获取 {len(分类数据)} 条结果")
-    else:
-        print("⚠️  未检测到 ANTHROPIC_API_KEY，输出 Prompt 预览（前 1500 字符）:\n")
+    if llm结果 is None:
+        # C6: 无 API Key
+        print("⚠️  未配置 ANTHROPIC_API_KEY，输出 Prompt 预览（前 1500 字符）:\n")
         print("=" * 60)
         print(分类任务[:1500])
         print("=" * 60)
         print("\n💡 设置 ANTHROPIC_API_KEY 环境变量后重新运行即可调用 AI 分类。")
         return {"总词数": len(raw_rows), "去重后": len(seen), "提示": "未调用LLM"}
+    elif llm结果 == "":
+        # C6: API 调用失败
+        print("❌ AI 分类失败（已重试 2 次），请检查网络或密钥有效性后重试。")
+        return {"总词数": len(raw_rows), "去重后": len(seen), "提示": "API调用失败"}
+    else:
+        分类数据 = 解析_LLM_结果(llm结果)
+        print(f"✅ AI 分类完成，获取 {len(分类数据)} 条结果")
 
     # 合并分类结果到原始数据
     统计 = {
