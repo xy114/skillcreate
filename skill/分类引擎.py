@@ -140,44 +140,58 @@ def 调用_LLM_分类(分类标准: str, 分类任务: str, 类目: str):
 
 def 解析_LLM_结果(llm输出: str) -> list[dict]:
     """
-    解析 AI 返回的分类结果。
-    格式: 序号 | 关键词 | 分类 | 属性标签 | 建议动作 | 判断理由
+    解析 AI 返回的分类结果（6 列 | 分隔格式）。
     """
     结果 = []
     有效分类 = {"一级核心词", "二级属性词", "三级场景词", "品牌词", "竞品词", "不相关/宽泛词"}
+    有效建议动作 = {"建议投放", "仅Listing嵌入", "建议否定", "待判定"}
 
     for line in llm输出.strip().split("\n"):
         line = line.strip()
-        # 跳过空行、表格分隔线、非数据行
+        # 跳过空行、表格分隔线、表头行、markdown 代码块标记
         if not line or line.startswith("---") or line.startswith("序号") or line.startswith("```"):
             continue
-        # 按 | 分割
+
         parts = [p.strip() for p in line.split("|")]
-        if len(parts) < 5:
-            continue
-        # 跳过序号为纯数字开头的非数据行
-        try:
-            序号 = parts[0]
-            if not 序号.isdigit():
-                continue
-        except ValueError:
+        if len(parts) < 6:       # N1: 6 列
             continue
 
-        分类 = parts[2] if len(parts) > 2 else ""
-        # 标准化分类名（AI 可能输出略有差异）
-        for 标准分类 in 有效分类:
-            if 标准分类 in 分类:
-                分类 = 标准分类
-                break
+        # C5: 直接判断 isdigit，无 try/except
+        序号 = parts[0]
+        if not 序号.isdigit():
+            continue
+
+        # C2: 先剥离括号注释，再精确匹配
+        raw_分类 = parts[2] if len(parts) > 2 else ""
+        分类_标准化 = re.sub(r'[（(][^)）]*[)）]', '', raw_分类).strip()
+        分类 = 分类_标准化 if 分类_标准化 in 有效分类 else ""
+
+        # C10: 建议动作校验
+        raw_建议动作 = parts[4].strip() if len(parts) > 4 else ""
+        建议动作 = raw_建议动作 if raw_建议动作 in 有效建议动作 else "待判定"
 
         结果.append({
             "关键词": parts[1] if len(parts) > 1 else "",
-            "分类": 分类 if 分类 in 有效分类 else "不相关/宽泛词",
+            "分类": 分类 if 分类 else "不相关/宽泛词",
             "属性标签": parts[3] if len(parts) > 3 else "-",
-            "建议动作": parts[4] if len(parts) > 4 else "待判定",
+            "建议动作": 建议动作,
+            "判断理由": parts[5] if len(parts) > 5 else "",   # N2
         })
 
-    return 结果
+    # N5: 检测 LLM 对同关键词输出多行
+    已见 = {}
+    for r in 结果:
+        kw_lower = r["关键词"].lower()
+        if kw_lower in 已见:
+            existing = 已见[kw_lower]
+            if existing["分类"] != r["分类"]:
+                print(f"⚠️  关键词「{r['关键词']}」存在冲突分类: \"{existing['分类']}\" vs \"{r['分类']}\"，已保留首次")
+            else:
+                print(f"⚠️  关键词「{r['关键词']}」重复输出（相同分类），已合并")
+        else:
+            已见[kw_lower] = r
+
+    return list(已见.values())
 
 
 # ============================================================
@@ -264,13 +278,15 @@ def 处理关键词表(输入_csv路径: str, 输出_csv路径: str, 产品类�
             "属性标签": 属性标签,
             "词频": str(info["词频"]),
             "建议动作": 建议动作,
+            "判断理由": 分类信息.get("判断理由", ""),
             "搜索量": info["搜索量"],
             "竞争度": info["竞争度"],
             "PPC竞价(USD)": info["PPC竞价(USD)"],
         })
 
     # 写入输出 CSV
-    输出列 = ["关键词", "分类", "属性标签", "词频", "建议动作", "搜索量", "竞争度", "PPC竞价(USD)"]
+    输出列 = ["关键词", "分类", "属性标签", "词频", "建议动作", "判断理由",
+              "搜索量", "竞争度", "PPC竞价(USD)"]
     with open(输出_csv路径, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=输出列)
         writer.writeheader()
